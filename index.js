@@ -5,7 +5,7 @@ const CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/late
 /** Thousands with space, same idea as decenter-bot NicePrint + comma→space */
 function nicePrint(number) {
   if (number === 0) return "0";
-  const digits = number < 1 ? 4 : 2;
+  const digits = number < 1 ? 4 : number >= 100 ? 0 : 2;
   const fixed = number.toFixed(digits);
   const [intRaw, frac] = fixed.split(".");
   const intPart = intRaw.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
