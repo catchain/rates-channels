@@ -1,6 +1,9 @@
 import "dotenv/config";
 
 const CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest";
+const CMC_CONVERT_URL = "https://pro-api.coinmarketcap.com/v1/tools/price-conversion";
+
+const FIATS = new Set(["USD", "EUR"]);
 
 /** Thousands with space, same idea as decenter-bot NicePrint + comma→space */
 function nicePrint(number) {
@@ -17,6 +20,13 @@ function formatPriceUsd(symbol, price) {
   const s = symbol.toUpperCase();
   if (s === "BTC" || s === "ETH") return nicePrint(Math.trunc(price));
   return nicePrint(price);
+}
+
+/** Fiat → RUB: always 2 decimals, thousand separator with space */
+function formatRub(amount) {
+  const [intRaw, frac] = amount.toFixed(2).split(".");
+  const intPart = intRaw.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return `${intPart}.${frac}`;
 }
 
 function loadChannels() {
@@ -51,6 +61,24 @@ async function fetchQuotes(symbols, apiKey) {
   return body.data || {};
 }
 
+/** Fiat → RUB via CMC price-conversion. Returns price in RUB or throws. */
+async function fetchFiatRub(symbol, apiKey) {
+  const url = `${CMC_CONVERT_URL}?amount=1&symbol=${encodeURIComponent(symbol)}&convert=RUB`;
+  const res = await fetch(url, {
+    headers: { "X-CMC_PRO_API_KEY": apiKey, Accept: "application/json" },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = body?.status?.error_message || res.statusText;
+    throw new Error(`CMC ${res.status}: ${msg}`);
+  }
+  // When symbol resolves to multiple matches CMC returns an array; pick the first.
+  const item = Array.isArray(body?.data) ? body.data[0] : body?.data;
+  const price = item?.quote?.RUB?.price;
+  if (price == null) throw new Error("no RUB price in response");
+  return price;
+}
+
 async function telegramSendMessage(token, chatId, text) {
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
@@ -80,19 +108,56 @@ async function tick({ cmcKey, botToken, channels }) {
     return;
   }
 
-  const data = await fetchQuotes(symbols, cmcKey);
+  const cryptoSymbols = symbols.filter((s) => !FIATS.has(s));
+  const fiatSymbols = symbols.filter((s) => FIATS.has(s));
+
+  // kind: "crypto" | "fiat", value: number
+  const prices = {};
+
+  if (cryptoSymbols.length > 0) {
+    try {
+      const data = await fetchQuotes(cryptoSymbols, cmcKey);
+      for (const s of cryptoSymbols) {
+        const p = data[s]?.quote?.USD?.price;
+        if (p == null) {
+          console.error(`Missing CMC price for ${s}`);
+          continue;
+        }
+        prices[s] = { kind: "crypto", value: p };
+      }
+    } catch (e) {
+      console.error("crypto fetch failed:", e.message);
+    }
+  }
+
+  if (fiatSymbols.length > 0) {
+    const results = await Promise.allSettled(
+      fiatSymbols.map((s) => fetchFiatRub(s, cmcKey))
+    );
+    results.forEach((r, idx) => {
+      const s = fiatSymbols[idx];
+      if (r.status === "fulfilled") {
+        prices[s] = { kind: "fiat", value: r.value };
+      } else {
+        console.error(`${s} fiat fetch failed:`, r.reason?.message || r.reason);
+      }
+    });
+  }
+
   const ordered = sendOrder(symbols);
 
   for (let i = 0; i < ordered.length; i++) {
     const symbol = ordered[i];
     const chatId = channels[symbol];
-    const row = data[symbol];
-    const price = row?.quote?.USD?.price;
-    if (price == null) {
-      console.error(`Missing CMC price for ${symbol}`);
+    const entry = prices[symbol];
+    if (!entry) {
+      // Already logged above; skip without blocking the rest.
       continue;
     }
-    const line = `$${formatPriceUsd(symbol, price)}`;
+    const line =
+      entry.kind === "fiat"
+        ? `${formatRub(entry.value)} ₽`
+        : `$${formatPriceUsd(symbol, entry.value)}`;
     try {
       await telegramSendMessage(botToken, chatId, line);
       console.log(new Date().toISOString(), symbol, "→", chatId, line);
