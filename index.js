@@ -166,7 +166,7 @@ async function tick({ cmcKey, botToken, channels }) {
     } catch (e) {
       console.error(symbol, "send failed:", e.message);
     }
-    if (i < ordered.length - 1) await sleep(700);
+    if (i < ordered.length - 1) await sleep(300);
   }
 }
 
