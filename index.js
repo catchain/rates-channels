@@ -40,12 +40,14 @@ function loadChannels() {
   return channels;
 }
 
+/** Send order: explicit list first, then any extra CHANNEL_* keys alphabetically. */
+const SEND_ORDER = ["GRAM", "SOL", "ETH", "BTC", "EUR", "USD"];
+
 function sendOrder(symbols) {
-  const preferred = ["TON", "ETH", "BTC"];
   const rest = symbols
-    .filter((s) => !preferred.includes(s))
+    .filter((s) => !SEND_ORDER.includes(s))
     .sort();
-  return [...preferred.filter((s) => symbols.includes(s)), ...rest];
+  return [...SEND_ORDER.filter((s) => symbols.includes(s)), ...rest];
 }
 
 async function fetchQuotes(symbols, apiKey) {
